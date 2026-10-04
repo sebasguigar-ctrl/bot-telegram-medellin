@@ -1,19 +1,19 @@
 import pandas as pd
-from pathlib import Path
 from database import SessionLocal, Usuario, init_db
 
-
-def cargar_usuarios_desde_excel(ruta_excel):
+def cargar_usuarios_desde_googlesheets():
     # Asegurar que las tablas existan
     init_db()
 
-    ruta = Path(ruta_excel)
-    if not ruta.exists():
-        print(f"❌ Error: El archivo '{ruta_excel}' no existe.")
-        return
+    # URL de exportación CSV de Google Sheets para Usuarios
+    file_id = "1dEpJ3ubdxvdXYRFClv54V1axcnkhiA-y"
+    gid = "2054280824"
+    url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=csv&gid={gid}"
+
+    print("--- INICIANDO CARGA DE USUARIOS DESDE GOOGLE SHEETS ---")
 
     try:
-        df = pd.read_excel(ruta)
+        df = pd.read_csv(url)
 
         # Limpiar nombres de columnas
         df.columns = [str(c).strip().lower() for c in df.columns]
@@ -28,7 +28,7 @@ def cargar_usuarios_desde_excel(ruta_excel):
         )
 
         if not col_cedula or not col_nombre:
-            print("❌ Error: No se encontraron las columnas necesarias en el Excel.")
+            print("❌ Error: No se encontraron las columnas necesarias en el Google Sheet.")
             print(f"📌 Columnas detectadas: {list(df.columns)}")
             return
 
@@ -37,7 +37,16 @@ def cargar_usuarios_desde_excel(ruta_excel):
 
         try:
             for _, fila in df.iterrows():
-                cedula = str(fila[col_cedula]).strip()
+                cedula_raw = fila[col_cedula]
+                if pd.isna(cedula_raw):
+                    continue
+                
+                # Evitar decimales si lee la cédula como número
+                if isinstance(cedula_raw, float) and cedula_raw.is_integer():
+                    cedula = str(int(cedula_raw)).strip()
+                else:
+                    cedula = str(cedula_raw).strip()
+
                 nombre = str(fila[col_nombre]).strip()
 
                 if not cedula or not nombre or cedula.lower() in ["nan", "none", ""]:
@@ -58,7 +67,7 @@ def cargar_usuarios_desde_excel(ruta_excel):
                 procesados += 1
 
             session.commit()
-            print("✅ Carga de usuarios finalizada con éxito.")
+            print("✅ Carga de usuarios desde Google Sheets finalizada con éxito.")
             print(f"📊 Registros procesados/actualizados: {procesados}")
 
         except Exception as e:
@@ -68,15 +77,8 @@ def cargar_usuarios_desde_excel(ruta_excel):
             session.close()
 
     except Exception as e:
-        print(f"❌ Error al procesar el archivo Excel: {e}")
+        print(f"❌ Error al procesar el Google Sheet de usuarios: {e}")
 
 
 if __name__ == "__main__":
-    print("--- INICIANDO CARGA DE USUARIOS ---")
-    ruta_usuarios = Path(__file__).resolve().parent / "usuarios.xlsx"
-
-    if ruta_usuarios.exists():
-        print(f"Cargando desde: {ruta_usuarios.name}")
-        cargar_usuarios_desde_excel(str(ruta_usuarios))
-    else:
-        print(f"⚠️ No se encontró el archivo '{ruta_usuarios.name}'")
+    cargar_usuarios_desde_googlesheets()
