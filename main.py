@@ -1260,7 +1260,7 @@ def main():
     app.run_polling()
 
 
-iif __name__ == "__main__":
+if __name__ == "__main__":
     try:
         print("🔄 Sincronizando datos desde Google Sheets antes de iniciar...")
         cargar_usuarios_desde_googlesheets()
