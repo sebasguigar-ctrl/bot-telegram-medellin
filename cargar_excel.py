@@ -11,7 +11,7 @@ def cargar_desde_existencia_bodega(ruta_excel):
     """Carga los productos evaluando el valor calculado de las fórmulas en Excel."""
     init_db()
     
-    # 1. Cargar con openpyxl en modo data_only=True para extraer el resultado de las fórmulas
+    # Cargar con openpyxl en modo data_only=True para extraer resultados de fórmulas
     wb = load_workbook(ruta_excel, data_only=True)
     
     hoja_nombre = next(
@@ -38,12 +38,15 @@ def cargar_desde_existencia_bodega(ruta_excel):
     # Limpiar nombres de columnas
     df.columns = [str(col).replace('\n', ' ').replace('\r', '').strip() if col is not None else '' for col in df.columns]
     
-    col_codigo = df.columns[0]      # Columna A
-    col_descrip = df.columns[1]     # Columna B
+    col_codigo = df.columns[0]      # Columna A (Codigo)
+    col_descrip = df.columns[1]     # Columna B (Material Description)
     
-    # Buscar columna que contenga CANTIDAD BODEGA
+    # Buscar columna de cantidad: 'CANTIDAD BODEGA' o Columna G (índice 6)
     col_cant_match = [c for c in df.columns if 'CANTIDAD BODEGA' in c.upper()]
-    col_cantidad = col_cant_match[0] if col_cant_match else None
+    if col_cant_match:
+        col_cantidad = col_cant_match[0]
+    else:
+        col_cantidad = df.columns[6] if len(df.columns) > 6 else None
     
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -54,69 +57,36 @@ def cargar_desde_existencia_bodega(ruta_excel):
     for _, row in df.iterrows():
         cod = str(row[col_codigo]).strip() if pd.notna(row[col_codigo]) else None
         
-        if not cod or cod.lower() in ['nan', 'none', '']:
+        if not cod or cod.lower() in ['nan', 'none', '', 'codigo']:
             continue
             
         nombre = str(row[col_descrip]).strip() if pd.notna(row[col_descrip]) else "Sin Descripción"
         
-        # Procesar valor numérico calculado por la fórmula
+        # Procesar valor numérico calculado de la fórmula en Columna G
         cant = 0
         if col_cantidad and pd.notna(row[col_cantidad]):
             try:
                 cant = int(float(row[col_cantidad]))
-            except ValueError:
+            except (ValueError, TypeError):
                 cant = 0
         
         if cant > 0:
             con_stock += 1
 
+        # Mapeo exacto hacia las columnas de SQLite: codigo, nombre, cantidad
         cursor.execute("""
-            INSERT OR REPLACE INTO productos (codigo, nombre, cantidad, precio, unidad)
-            VALUES (?, ?, ?, ?, ?)
-        """, (cod, nombre, cant, 0.0, "EA"))
+            INSERT INTO productos (codigo, nombre, cantidad)
+            VALUES (?, ?, ?)
+            ON CONFLICT(codigo) DO UPDATE SET
+                nombre = excluded.nombre,
+                cantidad = excluded.cantidad
+        """, (cod, nombre, cant))
         
         cargados += 1
         
     conn.commit()
     conn.close()
     print(f"✅ ¡Éxito! Se cargaron {cargados} productos ({con_stock} con stock real) a {DB_PATH.name}")
-
-
-def registrar_movimiento_telegram(ruta_excel, codigo, descripcion, tipo_mov, cantidad, contratista="", observaciones=""):
-    """Agrega un registro en la pestaña 'ENTRADAS Y SALIDAS' de Excel."""
-    if not Path(ruta_excel).exists():
-        print(f"⚠️ No se encontró el archivo Excel en {ruta_excel}")
-        return
-
-    wb = load_workbook(ruta_excel)
-    
-    if "ENTRADAS Y SALIDAS" not in wb.sheetnames:
-        print("⚠️ No se encontró la pestaña 'ENTRADAS Y SALIDAS'")
-        return
-        
-    ws = wb["ENTRADAS Y SALIDAS"]
-    
-    fecha_actual = datetime.now()
-    fecha_str = fecha_actual.strftime("%Y-%m-%d")
-    mes_str = fecha_actual.strftime("%B")
-    
-    entrada_val = cantidad if tipo_mov.upper() == "ENTRADA" else ""
-    salida_val = cantidad if tipo_mov.upper() == "SALIDA" else ""
-    
-    ws.append([
-        fecha_str,
-        mes_str,
-        codigo,
-        descripcion,
-        entrada_val,
-        salida_val,
-        contratista,
-        observaciones
-    ])
-    
-    wb.save(ruta_excel)
-    wb.close()
-    print(f"📝 Registrado movimiento ({tipo_mov}) para el código {codigo} en Excel.")
 
 
 if __name__ == "__main__":
