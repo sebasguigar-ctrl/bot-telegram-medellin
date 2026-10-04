@@ -2,6 +2,8 @@ import os
 import asyncio
 import ssl
 import httpx
+from cargar_usuarios import cargar_usuarios_desde_googlesheets
+from cargar_materiales import cargar_desde_existencia_bodega
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.request import HTTPXRequest
@@ -1258,8 +1260,12 @@ def main():
     app.run_polling()
 
 
-if __name__ == "__main__":
+iif __name__ == "__main__":
     try:
+        print("🔄 Sincronizando datos desde Google Sheets antes de iniciar...")
+        cargar_usuarios_desde_googlesheets()
+        cargar_desde_existencia_bodega()
+        
         main()
     except (KeyboardInterrupt, SystemExit):
         pass
