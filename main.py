@@ -16,6 +16,24 @@ from telegram.ext import (
 )
 from database import init_db
 
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import os
+
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot activo 24/7")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
+    server.serve_forever()
+
+# Inicia el servidor HTTP en un hilo secundario
+Thread(target=run_web_server, daemon=True).start()
+
 # Crea las tablas si no existen al iniciar
 init_db()
 
