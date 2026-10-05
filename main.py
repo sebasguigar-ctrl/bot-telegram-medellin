@@ -704,7 +704,21 @@ async def procesar_lote_entrada(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("❌ Hubo un error al registrar la entrada en la base de datos.", reply_markup=None)
         return ConversationHandler.END
 
-    # --- ACTUALIZAR GOOGLE SHEETS DE INMEDIATO ---
+    # Construir resumen para mostrar en Telegram (usando 'codigo' unificado)
+    resumen_final = f"🟢 *¡Entrada registrada con éxito!*\n👤 *Usuario:* {nombre_usuario}\n\n"
+    for item in carrito:
+        # Asegúrate de usar 'codigo' o 'code' dependiendo de cómo lo guardes en el carrito
+        codigo_item = item.get('codigo') or item.get('code', 'N/D')
+        resumen_final += f"• `{codigo_item}` | {item['nombre']}: *+{item['cantidad']} un.*\n"
+
+    # 1. MOSTRAR EL MENSAJE EN TELEGRAM DE INMEDIATO (Evita el congelamiento)
+    await query.edit_message_text(
+        resumen_final + "\n\n🔒 *Sesión cerrada automáticamente.*",
+        reply_markup=None,
+        parse_mode="Markdown"
+    )
+
+    # 2. ACTUALIZAR GOOGLE SHEETS DESPUÉS (En segundo plano)
     try:
         registrar_en_google_sheets(
             carrito=carrito,
@@ -713,32 +727,17 @@ async def procesar_lote_entrada(update: Update, context: ContextTypes.DEFAULT_TY
         )
     except Exception as e:
         print(f"Advertencia: No se pudo actualizar Google Sheets en tiempo real: {e}")
-    # ----------------------------------------------------
-
-    # Construir resumen para mostrar en Telegram[cite: 7]
-    resumen_final = f"🟢 *¡Entrada registrada con éxito!*\n👤 *Usuario:* {nombre_usuario}\n\n"
-    for item in carrito:
-        resumen_final += f"• `{item['code']}` | {item['nombre']}: +{item['cantidad']} un.\n"
-
-    # Construir resumen para mostrar en Telegram
-    resumen_final = f"🟢 *¡Entrada registrada con éxito!*\n👤 *Usuario:* {nombre_usuario}\n\n"
-    for item in carrito:
-        resumen_final += f"• `{item['codigo']}` | {item['nombre']}: *+{item['cantidad']} un.*\n"
-
-    # Mostrar resumen al usuario
-    await query.edit_message_text(
-        resumen_final + "\n\n🔒 *Sesión cerrada automáticamente.*",
-        reply_markup=None,
-        parse_mode="Markdown"
-    )
 
     # Notificar al grupo de Telegram si está configurado
     if CHAT_ID_GRUPO:
-        await context.bot.send_message(
-            chat_id=CHAT_ID_GRUPO,
-            text=resumen_final,
-            parse_mode="Markdown",
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=CHAT_ID_GRUPO,
+                text=resumen_final,
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            print(f"Error al enviar notificación al grupo: {e}")
 
     # 1. Borra TODOS los datos almacenados
     context.user_data.clear()
