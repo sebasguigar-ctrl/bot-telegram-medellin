@@ -16,6 +16,8 @@ from telegram.ext import (
     ConversationHandler,
     filters,
 )
+import gspread
+from datetime import datetime
 from database import init_db
 
 from threading import Thread
@@ -32,6 +34,47 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
+
+    def registrar_en_google_sheets(carrito, tipo, nombre_usuario, contratista="N/A"):
+    """Registra automáticamente las entradas o salidas en su respectiva pestaña de Google Sheets."""
+    try:
+        client = gspread.service_account(filename='credentials.json')
+        file_id = "1DgmmISpHeTSJ6ByEKaxJSsF1HSDgZAxTCP_bXpYQ5IA"
+        spreadsheet = client.open_by_key(file_id)
+        
+        # Seleccionar la pestaña correspondiente según el tipo
+        if tipo == "ENTRADA":
+            sheet = spreadsheet.worksheet("ENTRADA") # O sheet1 si tu pestaña principal es entrada
+        else:
+            sheet = spreadsheet.worksheet("SALIDA")  # Pestaña específica para salidas
+        
+        now = datetime.now()
+        fecha_str = now.strftime("%d/%m/%Y")
+        
+        meses = {
+            1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 
+            5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto", 
+            9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+        }
+        mes_str = meses.get(now.month, "")
+
+        for item in carrito:
+            codigo = item.get('code', item.get('codigo', ''))
+            nombre_desc = item.get('nombre', '')
+            cantidad = item.get('cantidad', 0)
+            
+            if tipo == "ENTRADA":
+                # Estructura: [FECHA, MES, Codigo, Material Description, ENTRADA, usuario]
+                fila = [fecha_str, mes_str, codigo, nombre_desc, cantidad, nombre_usuario]
+            else:
+                # Estructura: [FECHA, MES, Codigo, Material Description, SALIDA, CONTRATISTA, USUARIO]
+                fila = [fecha_str, mes_str, codigo, nombre_desc, cantidad, contratista, nombre_usuario]
+            
+            sheet.append_row(fila)
+            
+        print(f"✅ Google Sheets ({tipo}) actualizado en tiempo real con éxito.")
+    except Exception as e:
+        print(f"❌ Error al actualizar Google Sheets en tiempo real: {e}")
 
 # Inicia el servidor HTTP en un hilo secundario
 Thread(target=run_web_server, daemon=True).start()
@@ -660,6 +703,22 @@ async def procesar_lote_entrada(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("❌ Hubo un error al registrar la entrada en la base de datos.", reply_markup=None)
         return ConversationHandler.END
 
+    # --- ACTUALIZAR GOOGLE SHEETS DE INMEDIATO ---
+    try:
+        registrar_en_google_sheets(
+            carrito=carrito,
+            tipo="ENTRADA",
+            nombre_usuario=nombre_usuario
+        )
+    except Exception as e:
+        print(f"Advertencia: No se pudo actualizar Google Sheets en tiempo real: {e}")
+    # ----------------------------------------------------
+
+    # Construir resumen para mostrar en Telegram[cite: 7]
+    resumen_final = f"🟢 *¡Entrada registrada con éxito!*\n👤 *Usuario:* {nombre_usuario}\n\n"
+    for item in carrito:
+        resumen_final += f"• `{item['code']}` | {item['nombre']}: +{item['cantidad']} un.\n"
+
     # Construir resumen para mostrar en Telegram
     resumen_final = f"🟢 *¡Entrada registrada con éxito!*\n👤 *Usuario:* {nombre_usuario}\n\n"
     for item in carrito:
@@ -1074,6 +1133,17 @@ async def procesar_lote_salida(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=None
         )
         return ConversationHandler.END
+
+    # --- ACTUALIZAR GOOGLE SHEETS PARA SALIDA DE INMEDIATO ---
+    try:
+        registrar_en_google_sheets(
+            carrito=carrito,
+            tipo="SALIDA",
+            nombre_usuario=nombre_usuario,
+            contratista=empresa
+        )
+    except Exception as e:
+        print(f"Advertencia: No se pudo actualizar Google Sheets en tiempo real: {e}")
 
     # Construir resumen para mostrar en Telegram
     resumen_final = (

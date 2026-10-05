@@ -1,19 +1,30 @@
 import pandas as pd
+import gspread
 from database import SessionLocal, Usuario, init_db
 
 def cargar_usuarios_desde_googlesheets():
     # Asegurar que las tablas existan
     init_db()
 
-    # URL de exportación CSV de Google Sheets para Usuarios
-    file_id = "1dEpJ3ubdxvdXYRFClv54V1axcnkhiA-y"
-    gid = "2054280824"
-    url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=csv&gid={gid}"
+    # ID oficial de la hoja de Usuarios en Google Sheets
+    file_id = "1WCrlVgCpJSS1lBn-uNKtEAG9ul5AZ-S1UnMxNm-C9HY"
 
     print("--- INICIANDO CARGA DE USUARIOS DESDE GOOGLE SHEETS ---")
 
     try:
-        df = pd.read_csv(url)
+        # Autenticar de forma segura con la cuenta de servicio
+        client = gspread.service_account(filename='credentials.json')
+        
+        # Abrir la hoja de cálculo usando su ID oficial
+        sheet = client.open_by_key(file_id).sheet1
+        
+        # Obtener todos los registros en formato de lista de diccionarios y pasarlos a pandas
+        data = sheet.get_all_records()
+        df = pd.DataFrame(data)
+
+        if df.empty or len(df) < 1:
+            print("❌ La hoja de cálculo de usuarios está vacía o no tiene registros válidos.")
+            return
 
         # Limpiar nombres de columnas
         df.columns = [str(c).strip().lower() for c in df.columns]
