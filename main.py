@@ -19,7 +19,6 @@ from telegram.ext import (
 import gspread
 from datetime import datetime
 from database import init_db
-
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import os
@@ -46,9 +45,9 @@ def registrar_en_google_sheets(carrito, tipo, nombre_usuario, contratista="N/A")
         
         # Seleccionar la pestaña correspondiente según el tipo
         if tipo == "ENTRADA":
-            sheet = spreadsheet.worksheet("ENTRADA") # O sheet1 si tu pestaña principal es entrada
+            sheet = spreadsheet.worksheet("ENTRADAS") # Nombre exacto de tu pestaña
         else:
-            sheet = spreadsheet.worksheet("SALIDA")  # Pestaña específica para salidas
+            sheet = spreadsheet.worksheet("SALIDAS")  # Nombre exacto de tu pestaña
         
         now = datetime.now()
         fecha_str = now.strftime("%d/%m/%Y")
