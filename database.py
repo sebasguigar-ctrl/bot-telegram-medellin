@@ -205,4 +205,4 @@ def registrar_lote_movimientos(carrito: list, tipo: str, cedula_usuario: str, no
 
 
 def extraer_datos_producto(fila):
-    return fila[0], fila[1], fila[2]    
+    return fila[0], fila[1], fila[6]    
