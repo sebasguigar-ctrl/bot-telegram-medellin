@@ -35,9 +35,11 @@ def run_web_server():
     server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-    def registrar_en_google_sheets(carrito, tipo, nombre_usuario, contratista="N/A"):
+def registrar_en_google_sheets(carrito, tipo, nombre_usuario, contratista="N/A"):
     """Registra automáticamente las entradas o salidas en su respectiva pestaña de Google Sheets."""
     try:
+        client = gspread.service_account(filename='credentials.json')
+        # ... el resto de tu código que ya tienes hacia abajo ...
         client = gspread.service_account(filename='credentials.json')
         file_id = "1DgmmISpHeTSJ6ByEKaxJSsF1HSDgZAxTCP_bXpYQ5IA"
         spreadsheet = client.open_by_key(file_id)
@@ -1127,7 +1129,7 @@ async def procesar_lote_salida(update: Update, context: ContextTypes.DEFAULT_TYP
         contratista=empresa
     )
 
-    if not exito:
+    if not exito:   
         await query.edit_message_text(
             "❌ Hubo un error al registrar la salida en la base de datos.",
             reply_markup=None
