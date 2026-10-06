@@ -1330,12 +1330,17 @@ def main():
     app.run_polling()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
-        print("🔄 Sincronizando datos desde Google Sheets antes de iniciar...")
-        cargar_usuarios_desde_googlesheets()
-        cargar_desde_existencia_bodega()
-        
+        print("🚀 Iniciando servicios...")
+        try:
+            print("📥 Sincronizando datos desde Google Sheets...")
+            cargar_usuarios_desde_googlesheets()
+            cargar_desde_existencia_bodega()
+        except Exception as e:
+            print(f"⚠️ Alerta en Google Sheets (continuando arranque): {e}")
+            
         main()
     except (KeyboardInterrupt, SystemExit):
         pass
+   
