@@ -41,7 +41,7 @@ def cargar_desde_existencia_bodega():
                     continue
                 
                 # Extraemos usando las posiciones correctas: A(0)=Código, B(1)=Nombre, G(6)=Cantidad
-                codigo, nombre, cantidad_str = extraer_datos_producto(fila)
+                codigo, nombre, cantidad_str, requiere_serial = extraer_datos_producto(fila)
                 
                 if not codigo or not str(codigo).strip():
                     continue
@@ -57,11 +57,13 @@ def cargar_desde_existencia_bodega():
                 if prod:
                     prod.nombre = str(nombre).strip()
                     prod.cantidad = cantidad
+                    prod.requiere_serial = str(requiere_serial).strip().upper()  # Actualiza si requiere serial
                 else:
                     nuevo_prod = Producto(
                         codigo=str(codigo).strip(),
                         nombre=str(nombre).strip(),
-                        cantidad=cantidad
+                        cantidad=cantidad,
+                        requiere_serial=str(requiere_serial).strip().upper()  # Guarda si requiere serial
                     )
                     session.add(nuevo_prod)
             

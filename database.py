@@ -34,6 +34,7 @@ class Producto(Base):
     codigo = Column(String(50), primary_key=True)
     nombre = Column(Text, nullable=False)
     cantidad = Column(Integer, default=0, nullable=False)
+    requiere_serial = Column(String, default="NO")  # Guardará "SI" o "NO"
 
 
 class Movimiento(Base):
@@ -205,4 +206,9 @@ def registrar_lote_movimientos(carrito: list, tipo: str, cedula_usuario: str, no
 
 
 def extraer_datos_producto(fila):
-    return fila[0], fila[1], fila[6]    
+    # fila[0]: Código, fila[1]: Nombre, fila[6]: Cantidad, fila[7]: Serial (SI/NO)
+    codigo = fila[0] if len(fila) > 0 else ""
+    nombre = fila[1] if len(fila) > 1 else ""
+    cantidad = fila[6] if len(fila) > 6 else "0"
+    serial = fila[7] if len(fila) > 7 else "NO"
+    return codigo, nombre, cantidad, serial  

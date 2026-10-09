@@ -18,7 +18,7 @@ from telegram.ext import (
 )
 import gspread
 from datetime import datetime
-from database import init_db
+from database import init_db, SessionLocal
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import os
@@ -37,8 +37,6 @@ def run_web_server():
 def registrar_en_google_sheets(carrito, tipo, nombre_usuario, contratista="N/A"):
     """Registra automáticamente las entradas o salidas en su respectiva pestaña de Google Sheets."""
     try:
-        client = gspread.service_account(filename='credentials.json')
-        # ... el resto de tu código que ya tienes hacia abajo ...
         client = gspread.service_account(filename='credentials.json')
         file_id = "1DgmmISpHeTSJ6ByEKaxJSsF1HSDgZAxTCP_bXpYQ5IA"
         spreadsheet = client.open_by_key(file_id)
@@ -59,19 +57,28 @@ def registrar_en_google_sheets(carrito, tipo, nombre_usuario, contratista="N/A")
         }
         mes_str = meses.get(now.month, "")
 
+        # ⚠️ IMPORTANTE: El ciclo recorre cada ítem del carrito indentado correctamente
         for item in carrito:
             codigo = item.get('code', item.get('codigo', ''))
             nombre_desc = item.get('nombre', '')
             cantidad = item.get('cantidad', 0)
-            
+            seriales = item.get('seriales', [])  # Lista de seriales si aplica
+
             if tipo == "ENTRADA":
-                # Estructura: [FECHA, MES, Codigo, Material Description, ENTRADA, usuario]
+                # Estructura Entradas: [FECHA, MES, Codigo, Material Description, ENTRADA, usuario]
                 fila = [fecha_str, mes_str, codigo, nombre_desc, cantidad, nombre_usuario]
+                sheet.append_row(fila)
             else:
-                # Estructura: [FECHA, MES, Codigo, Material Description, SALIDA, CONTRATISTA, USUARIO]
-                fila = [fecha_str, mes_str, codigo, nombre_desc, cantidad, contratista, nombre_usuario]
-            
-            sheet.append_row(fila)
+                # Estructura Salidas: [FECHA, MES, Codigo, Material Description, SERIAL, SALIDA, CONTRATISTA, USUARIO]
+                # Si el producto tiene seriales, agregamos una fila por cada serial con cantidad 1
+                if seriales and len(seriales) > 0:
+                    for serial in seriales:
+                        fila = [fecha_str, mes_str, codigo, nombre_desc, serial, 1, contratista, nombre_usuario]
+                        sheet.append_row(fila)
+                else:
+                    # Si no lleva serial, se registra normal con su cantidad total y celda de serial vacía
+                    fila = [fecha_str, mes_str, codigo, nombre_desc, "", cantidad, contratista, nombre_usuario]
+                    sheet.append_row(fila)
             
         print(f"✅ Google Sheets ({tipo}) actualizado en tiempo real con éxito.")
     except Exception as e:
@@ -117,8 +124,10 @@ CHAT_ID_GRUPO = os.getenv("CHAT_ID_GRUPO")
     CONFIRMAR_LOTE_SALIDA,
     BUSCAR_CONSULTA,
     SELECCIONAR_PROD_CONSULTA,
-    SIN_STOCK_SALIDA,  # <-- NUEVO ESTADO AGREGADO (17)
-) = range(18)  # <-- CAMBIADO A 18
+    SIN_STOCK_SALIDA,
+    PIDE_SERIAL,           # <-- NUEVO ESTADO 18
+    ESPERA_TEXTO_SERIAL,   # <-- NUEVO ESTADO 19
+) = range(20)              # <-- CAMBIADO A 20
 
 
 def extraer_datos_producto(fila):
@@ -198,6 +207,8 @@ async def mostrar_menu_principal(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(texto, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     return MENU_PRINCIPAL
+
+
 
 # --- SUBMENÚ BODEGA ---
 async def menu_bodega(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -375,29 +386,82 @@ async def mostrar_detalle_consulta(update: Update, context: ContextTypes.DEFAULT
     return SELECCIONAR_PROD_CONSULTA
 
 
-async def volver_a_lista_resultados_consulta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Regresa a la lista previa de botones de coincidencia de consulta."""
+async def volver_a_lista_resultados_salida(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Regresa a la lista de resultados de búsqueda de salida."""
     query = update.callback_query
     await query.answer()
+    
+    resultados = context.user_data.get("resultados_busqueda_sal", [])
+    if not resultados:
+        await query.message.edit_text("⚠️ No hay resultados previos guardados. Por favor, realiza una nueva búsqueda.")
+        return BUSCAR_SALIDA
 
-    resultados = context.user_data.get("resultados_busqueda_cons", {})
-    busqueda = context.user_data.get("busqueda_texto_cons", "")
-
+    # Volvemos a mostrar el menú de resultados de salida
     keyboard = []
-    for i, (cod, nombre, cant) in resultados.items():
-        keyboard.append([InlineKeyboardButton(f"🧰 [{cant} un.] {nombre}", callback_data=f"sel_cons_{i}")])
-
-    keyboard.append([InlineKeyboardButton("🔍 Cambiar Búsqueda", callback_data="reiniciar_busqueda_cons")])
-    keyboard.append([InlineKeyboardButton("📦 Volver Menú Bodega", callback_data="op_bodega")])
+    for idx, prod in enumerate(resultados):
+        nombre_corto = prod['nombre'][:40]
+        keyboard.append([InlineKeyboardButton(f"📦 {nombre_corto} (Stock: {prod['stock']})", callback_data=f"sel_sal_{idx}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Nueva Búsqueda", callback_data="reiniciar_busqueda_sal")])
     keyboard.append([BOTON_FINALIZAR])
 
-    await query.edit_message_text(
-        f"🔍 *Materiales encontrados para '{busqueda}':*\n\n"
-        f"Selecciona el material correspondiente para consultar su stock:",
+    await query.message.edit_text(
+        "Selecciona el material de salida:",
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown",
+        parse_mode="Markdown"
+    )
+    return SELECCIONAR_PROD_SALIDA
+
+async def volver_a_lista_resultados_consulta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Regresa a la lista de resultados de búsqueda de consulta."""
+    query = update.callback_query
+    await query.answer()
+    
+    resultados = context.user_data.get("resultados_busqueda_cons", [])
+    if not resultados:
+        await query.message.edit_text("⚠️ No hay resultados previos guardados. Por favor, realiza una nueva búsqueda.")
+        return BUSCAR_CONSULTA
+
+    # Volvemos a mostrar el menú de resultados de consulta
+    keyboard = []
+    for idx, prod in enumerate(resultados):
+        nombre_corto = prod['nombre'][:40]
+        keyboard.append([InlineKeyboardButton(f"📦 {nombre_corto} (Stock: {prod['stock']})", callback_data=f"sel_cons_{idx}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Nueva Búsqueda", callback_data="reiniciar_busqueda_cons")])
+    keyboard.append([BOTON_FINALIZAR])
+
+    await query.message.edit_text(
+        "Selecciona el material que deseas consultar:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
     )
     return SELECCIONAR_PROD_CONSULTA
+
+async def forzar_boton_sin_stock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Maneja el caso en que el usuario escribe texto en lugar de usar los botones cuando el producto no tiene stock."""
+    await update.message.reply_text(
+        "⚠️ Por favor, utiliza los botones en pantalla para continuar:\n"
+        "• Regresar a los resultados\n"
+        "• O realizar una nueva búsqueda.",
+        parse_mode="Markdown"
+    )
+    return SIN_STOCK_SALIDA
+
+async def finalizar_sesion_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Permite al usuario finalizar la sesión actual de manera manual desde cualquier punto clave."""
+    query = update.callback_query
+    await query.answer()
+    
+    # Limpiamos los datos de usuario en context para asegurar un reinicio limpio
+    context.user_data.clear()
+    
+    await query.message.edit_text(
+        "🔒 **Sesión finalizada con éxito.**\n\n"
+        "Puedes iniciar una nueva operación enviando cualquier mensaje o usando los comandos del menú principal.",
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
 
 
 # --- FLUJO DE ENTRADA (🟢) ---
@@ -811,7 +875,9 @@ async def regresar_al_carrito_salida(update: Update, context: ContextTypes.DEFAU
     empresa = context.user_data.get("empresa_salida", "N/A")
     resumen_texto = f"🛒 *Lista de materiales a retirar (Empresa: {empresa}):*\n\n"
     for idx, item in enumerate(context.user_data.get("carrito_salida", []), 1):
-        resumen_texto += f"{idx}. `{item['codigo']}` - {item['nombre']}: *- {item['cantidad']} un.*\n"
+        # Si tiene seriales, los mostramos en el resumen
+        seriales_txt = f" (Ser: {len(item.get('seriales', []))})" if item.get('seriales') else ""
+        resumen_texto += f"{idx}. `{item['codigo']}` - {item['nombre']}: *- {item['cantidad']} un.*{seriales_txt}\n"
 
     keyboard_post = [
         [InlineKeyboardButton("🔴 Agregar OTRO material", callback_data="op_salida_otro")],
@@ -905,16 +971,42 @@ async def buscar_producto_salida(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data["prod_nombre"] = nombre
         context.user_data["prod_max"] = cantidad_actual
 
+        # Consulta robusta de serial por SQL directo
+        requiere_serial = "NO"
+        session = SessionLocal()
+        try:
+            from sqlalchemy import text
+            sql = text("SELECT requiere_serial FROM productos WHERE codigo = :cod")
+            res = session.execute(sql, {"cod": str(cod).strip()}).fetchone()
+            if not res:
+                sql = text("SELECT requiere_serial FROM materiales WHERE codigo = :cod")
+                res = session.execute(sql, {"cod": str(cod).strip()}).fetchone()
+            
+            if res and res[0] is not None:
+                val = res[0]
+                print(f"🔍 [DEBUG buscar] {cod} -> requiere_serial crudo: {val} (tipo: {type(val)})")
+                if val in ["SI", "S", "1", 1, True, "TRUE"] or str(val).strip().upper() in ["SI", "S", "TRUE", "1"]:
+                    requiere_serial = "SI"
+        except Exception as e:
+            print(f"❌ Error al consultar serial: {e}")
+            requiere_serial = "NO"
+        finally:
+            session.close()
+
+        # Guardamos la bandera para usarla después de recibir la cantidad
+        context.user_data["requiere_serial"] = (requiere_serial == "SI")
+
         keyboard = [
             [InlineKeyboardButton("⬅️ Nueva Búsqueda", callback_data="reiniciar_busqueda_sal")],
             [InlineKeyboardButton("📦 Volver Menú Bodega", callback_data="op_bodega")],
             [BOTON_FINALIZAR]
         ]
+
+        # Siempre pide la cantidad primero
         await update.message.reply_text(
-            f"🔴 *Material encontrado:*\n\n"
-            f"• *Material:* {nombre}\n"
+            f"🔴 *Material Encontrado:* {nombre}\n\n"
             f"• *Código:* `{cod}`\n"
-            f"• *Stock Disponible:* {cantidad_actual} un.\n\n"
+            f"• *Stock disponible:* {cantidad_actual} un.\n\n"
             f"Por favor, ingresa la **cantidad a retirar** (número entero positivo):",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown",
@@ -939,7 +1031,6 @@ async def buscar_producto_salida(update: Update, context: ContextTypes.DEFAULT_T
     )
     return SELECCIONAR_PROD_SALIDA
 
-
 async def confirmar_seleccion_salida(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -960,14 +1051,13 @@ async def confirmar_seleccion_salida(update: Update, context: ContextTypes.DEFAU
 
     total_resultados = len(context.user_data.get("resultados_busqueda_sal", {}))
     if total_resultados > 1:
-        boton_volver = InlineKeyboardButton("⬅️️ Volver a Lista de Resultados", callback_data="volver_resultados_sal")
+        boton_volver = InlineKeyboardButton("⬅ Volver a Lista de Resultados", callback_data="volver_resultados_sal")
     else:
         boton_volver = InlineKeyboardButton("🔍 Buscar Otro Material", callback_data="reiniciar_busqueda_sal")
 
     if cant <= 0:
         keyboard = [
             [boton_volver],
-            [InlineKeyboardButton("🔍 Buscar Otro Material", callback_data="reiniciar_busqueda_sal")],
             [InlineKeyboardButton("📦 Volver Menú Bodega", callback_data="op_bodega")],
             [BOTON_FINALIZAR]
         ]
@@ -977,7 +1067,7 @@ async def confirmar_seleccion_salida(update: Update, context: ContextTypes.DEFAU
             f"• *Código:* `{cod}`\n"
             f"• *Nombre:* {nombre}\n"
             f"• *Stock actual:* *0 un.*\n\n"
-            f"No es posible registrar salidas de un material sin stock. Selecciona una opción:",
+            f"No es posible registrar salidas sin stock. Selecciona una opción:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown",
         )
@@ -987,12 +1077,38 @@ async def confirmar_seleccion_salida(update: Update, context: ContextTypes.DEFAU
     context.user_data["prod_nombre"] = nombre
     context.user_data["prod_max"] = cant
 
+    # Consulta robusta de serial por SQL directo
+    requiere_serial = "NO"
+    session = SessionLocal()
+    try:
+        from sqlalchemy import text
+        sql = text("SELECT requiere_serial FROM productos WHERE codigo = :cod")
+        res = session.execute(sql, {"cod": str(cod).strip()}).fetchone()
+        if not res:
+            sql = text("SELECT requiere_serial FROM materiales WHERE codigo = :cod")
+            res = session.execute(sql, {"cod": str(cod).strip()}).fetchone()
+        
+        if res and res[0] is not None:
+            val = res[0]
+            print(f"🔍 [DEBUG confirmar] {cod} -> requiere_serial crudo: {val} (tipo: {type(val)})")
+            if val in ["SI", "S", "1", 1, True, "TRUE"] or str(val).strip().upper() in ["SI", "S", "TRUE", "1"]:
+                requiere_serial = "SI"
+    except Exception as e:
+        print(f"❌ Error al consultar serial: {e}")
+        requiere_serial = "NO"
+    finally:
+        session.close()
+
+    # Guardamos la bandera para usarla después de recibir la cantidad
+    context.user_data["requiere_serial"] = (requiere_serial == "SI")
+
     keyboard = [
         [boton_volver],
         [InlineKeyboardButton("📦 Volver Menú Bodega", callback_data="op_bodega")],
         [BOTON_FINALIZAR]
     ]
 
+    # Siempre pide la cantidad primero
     await query.edit_message_text(
         f"🔴 *Material Seleccionado:* {nombre}\n\n"
         f"• *Código:* `{cod}`\n"
@@ -1002,47 +1118,6 @@ async def confirmar_seleccion_salida(update: Update, context: ContextTypes.DEFAU
         parse_mode="Markdown",
     )
     return CANTIDAD_SALIDA
-
-async def volver_a_lista_resultados_salida(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """NUEVA FUNCIÓN: Regresa a la lista previa de salida."""
-    query = update.callback_query
-    await query.answer()
-
-    resultados = context.user_data.get("resultados_busqueda_sal", {})
-    busqueda = context.user_data.get("busqueda_texto_sal", "")
-
-    keyboard = []
-    for i, (cod, nombre, cant) in resultados.items():
-        keyboard.append([InlineKeyboardButton(f"🧰 [{cant} un.] {nombre}", callback_data=f"sel_sal_{i}")])
-
-    keyboard.append([InlineKeyboardButton("⬅️ Nueva Búsqueda", callback_data="reiniciar_busqueda_sal")])
-    keyboard.append([InlineKeyboardButton("📦 Volver Menú Bodega", callback_data="op_bodega")])
-    keyboard.append([BOTON_FINALIZAR])
-
-    await query.edit_message_text(
-        f"🔴 *Materiales encontrados para '{busqueda}':*\n\n"
-        f"Selecciona el material correspondiente:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown",
-    )
-    return SELECCIONAR_PROD_SALIDA
-
-
-async def forzar_boton_sin_stock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Intercepta cualquier texto que envíe el usuario estando sin stock y lo fuerza a usar un botón."""
-    keyboard_sin_stock = [
-        [InlineKeyboardButton("⬅️ Volver / Cambiar Material", callback_data="reiniciar_busqueda_sal")],
-        [InlineKeyboardButton("📦 Volver Menú Bodega", callback_data="op_bodega")],
-        [BOTON_FINALIZAR]
-    ]
-    await update.message.reply_text(
-        "⚠️ *Opción inválida por texto.*\n\n"
-        "El material no tiene stock. Debes presionar uno de los siguientes botones para continuar:",
-        reply_markup=InlineKeyboardMarkup(keyboard_sin_stock),
-        parse_mode="Markdown",
-    )
-    return SIN_STOCK_SALIDA
-
 
 async def guardar_cantidad_salida(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     texto = update.message.text.strip()
@@ -1070,13 +1145,27 @@ async def guardar_cantidad_salida(update: Update, context: ContextTypes.DEFAULT_
     cod = context.user_data["prod_codigo"]
     nombre = context.user_data["prod_nombre"]
 
+    # --- USAR LA BANDERA YA GUARDADA ---
+    requiere_serial = "SI" if context.user_data.get("requiere_serial", False) else "NO"
+
+    # Si requiere serial, iniciamos el proceso de captura de seriales
+    if requiere_serial == "SI":
+        context.user_data["temp_serial_codigo"] = cod
+        context.user_data["temp_serial_nombre"] = nombre
+        context.user_data["temp_serial_cantidad_requerida"] = cantidad
+        context.user_data["temp_serial_lista"] = []
+
+        return await pedir_siguiente_serial(update, context)
+
+    # --- SI NO REQUIERE SERIAL, CONTINÚA NORMAL ---
     if "carrito_salida" not in context.user_data:
         context.user_data["carrito_salida"] = []
 
     context.user_data["carrito_salida"].append({
         "codigo": cod,
         "nombre": nombre,
-        "cantidad": cantidad
+        "cantidad": cantidad,
+        "seriales": []
     })
 
     empresa = context.user_data.get("empresa_salida", "N/A")
@@ -1099,13 +1188,188 @@ async def guardar_cantidad_salida(update: Update, context: ContextTypes.DEFAULT_
         parse_mode="Markdown",
     )
     return PREGUNTAR_OTRO
+# --- FLUJO DE CAPTURA DE SERIALES ---
 
+# Define aquí tus nuevos estados (si no los tienes creados arriba en tu ConversationHandler, recuerda agregarlos)
+# PIDE_SERIAL, OPCION_INGRESO_SERIAL = range(900, 902) # (Ejemplo de nombres de estados)
+
+async def pedir_siguiente_serial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Muestra el estado actual de captura de seriales y los botones correspondientes."""
+    cod = context.user_data.get("temp_serial_codigo")
+    nombre = context.user_data.get("temp_serial_nombre")
+    cantidad_req = context.user_data.get("temp_serial_cantidad_requerida", 0)
+    seriales_actuales = context.user_data.get("temp_serial_lista", [])
+    
+    actual_count = len(seriales_actuales)
+    restantes = cantidad_req - actual_count
+
+    lista_str = "\n".join([f"• `{s}`" for s in seriales_actuales]) if seriales_actuales else "_(Ninguno aún)_"
+    
+    keyboard = []
+
+    if restantes > 0:
+        keyboard.append([
+            InlineKeyboardButton("📷 Escanear Serial", callback_data="serial_escanear"),
+            InlineKeyboardButton("⌨️ Ingresar Manual", callback_data="serial_manual"),
+        ])
+
+    # El botón para borrar el último serial siempre estará disponible si hay al menos uno
+    if seriales_actuales:
+        keyboard.append([InlineKeyboardButton("⌫ Borrar último serial", callback_data="serial_borrar_ultimo")])
+
+    if restantes <= 0:
+        keyboard.append([InlineKeyboardButton("✅ Confirmar Seriales y Agregar", callback_data="serial_confirmar_lote")])
+
+    keyboard.append([InlineKeyboardButton("⬅️ Cancelar / Volver", callback_data="reiniciar_busqueda_sal")])
+    keyboard.append([BOTON_FINALIZAR])
+
+    if restantes > 0:
+        texto_mensaje = (
+            f"🔢 *Control de Seriales Requeridos*\n\n"
+            f"• *Material:* {nombre}\n"
+            f"• *Código:* `{cod}`\n"
+            f"• *Progreso:* {actual_count} de {cantidad_req} ingresados\n\n"
+            f"*Seriales ingresados hasta ahora:*\n{lista_str}\n\n"
+            f"Por favor, selecciona una opción para registrar el **serial #{actual_count + 1}**:"
+        )
+    else:
+        texto_mensaje = (
+            f"✅ *¡Todos los seriales ingresados!*\n\n"
+            f"• *Material:* {nombre}\n"
+            f"• *Código:* `{cod}`\n"
+            f"• *Total:* {cantidad_req} un.\n\n"
+            f"*Seriales listos para guardar:*\n{lista_str}\n\n"
+            f"Puedes borrar el último si necesitas corregirlo o confirmar para agregarlo:"
+        )
+
+    if update.callback_query:
+        await update.callback_query.answer()
+        target_func = update.callback_query.edit_message_text
+    else:
+        target_func = update.message.reply_text
+
+    await target_func(
+        texto_mensaje,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
+    )
+    return PIDE_SERIAL
+
+async def manejar_botones_serial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Controla los clics en los botones de escanear, manual o borrar."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "serial_escanear":
+        await query.edit_message_text(
+            "📷 *Escanear Serial*\n\n"
+            "Por favor, usa la cámara o lector de tu dispositivo para enviar el código de barras / serial en tu siguiente mensaje:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="serial_volver_menu")]]),
+            parse_mode="Markdown",
+        )
+        return ESPERA_TEXTO_SERIAL
+
+    elif data == "serial_manual":
+        await query.edit_message_text(
+            "⌨️ *Ingreso Manual de Serial*\n\n"
+            "Por favor, escribe el número de serial en tu siguiente mensaje:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="serial_volver_menu")]]),
+            parse_mode="Markdown",
+        )
+        return ESPERA_TEXTO_SERIAL
+
+    elif data == "serial_borrar_ultimo":
+        seriales = context.user_data.get("temp_serial_lista", [])
+        if seriales:
+            eliminado = seriales.pop()
+            await query.answer(f"Se eliminó el serial: {eliminado}", show_alert=False)
+        return await pedir_siguiente_serial(update, context)
+
+    elif data == "serial_volver_menu":
+        return await pedir_siguiente_serial(update, context)
+
+    return PIDE_SERIAL
+
+
+async def recibir_texto_serial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Recibe el texto enviado por el usuario (ya sea por escáner o manual) y lo almacena."""
+    serial_ingresado = update.message.text.strip()
+
+    if not serial_ingresado:
+        await update.message.reply_text("❌ El serial no puede estar vacío. Inténtalo de nuevo:")
+        return ESPERA_TEXTO_SERIAL
+
+    # Opcional: Validar si el serial ya fue ingresado en este mismo lote para evitar duplicados
+    seriales_actuales = context.user_data.get("temp_serial_lista", [])
+    if serial_ingresado in seriales_actuales:
+        await update.message.reply_text("⚠️ Este serial ya fue ingresado en este producto. Ingresa uno diferente:")
+        return ESPERA_TEXTO_SERIAL
+
+    # Agregamos el serial a la lista temporal
+    seriales_actuales.append(serial_ingresado)
+    context.user_data["temp_serial_lista"] = seriales_actuales
+
+    # Volvemos a pedir el siguiente serial (o finalizar si ya se completaron)
+    return await pedir_siguiente_serial(update, context)
+
+async def confirmar_lote_seriales(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    cod = context.user_data.get("temp_serial_codigo")
+    nombre = context.user_data.get("temp_serial_nombre")
+    cantidad_req = context.user_data.get("temp_serial_cantidad_requerida", 0)
+    seriales_actuales = context.user_data.get("temp_serial_lista", [])
+
+    if "carrito_salida" not in context.user_data:
+        context.user_data["carrito_salida"] = []
+
+    context.user_data["carrito_salida"].append({
+        "codigo": cod,
+        "nombre": nombre,
+        "cantidad": cantidad_req,
+        "seriales": seriales_actuales
+    })
+
+    # Limpiar temporales
+    context.user_data.pop("temp_serial_codigo", None)
+    context.user_data.pop("temp_serial_nombre", None)
+    context.user_data.pop("temp_serial_cantidad_requerida", None)
+    context.user_data.pop("temp_serial_lista", None)
+
+    empresa = context.user_data.get("empresa_salida", "N/A")
+    resumen_texto = f"🛒 *Lista de materiales a retirar (Empresa: {empresa}):*\n\n"
+    for idx, item in enumerate(context.user_data["carrito_salida"], 1):
+        seriales = item.get('seriales', [])
+        if seriales:
+            seriales_str = ", ".join([f"`{s}`" for s in seriales])
+            ser_txt = f"\n   └ *Seriales:* {seriales_str}"
+        else:
+            ser_txt = ""
+            
+        resumen_texto += f"{idx}. `{item['codigo']}` - {item['nombre']}: *- {item['cantidad']} un.*{ser_txt}\n\n"
+
+    keyboard_post = [
+        [InlineKeyboardButton("🔴 Agregar OTRO material", callback_data="op_salida_otro")],
+        [InlineKeyboardButton("✅ CONFIRMAR Y GUARDAR SALIDA", callback_data="procesar_lote_salida")],
+        [InlineKeyboardButton("📦 Volver Menú Bodega", callback_data="op_bodega")],
+        [BOTON_FINALIZAR],
+    ]
+
+    await query.edit_message_text(
+        f"✅ *¡Seriales guardados y material agregado con éxito!*\n\n"
+        f"{resumen_texto}"
+        f"¿Deseas agregar más materiales o procesar el retiro definitivo?",
+        reply_markup=InlineKeyboardMarkup(keyboard_post),
+        parse_mode="Markdown",
+    )
+    return PREGUNTAR_OTRO
 
 async def procesar_lote_salida(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
 
-    # Extraer el carrito y datos de la sesión
     carrito = context.user_data.pop("carrito_salida", [])
     empresa = context.user_data.get("empresa_salida", "DESCONOCIDA")
     cedula_usuario = context.user_data.get("cedula_usuario", "")
@@ -1118,7 +1382,6 @@ async def procesar_lote_salida(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return ConversationHandler.END
 
-    # Guardar todo el lote en la base de datos SQL
     exito = registrar_lote_movimientos(
         carrito=carrito,
         tipo="SALIDA",
@@ -1134,7 +1397,6 @@ async def procesar_lote_salida(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return ConversationHandler.END
 
-    # --- ACTUALIZAR GOOGLE SHEETS PARA SALIDA DE INMEDIATO ---
     try:
         registrar_en_google_sheets(
             carrito=carrito,
@@ -1145,7 +1407,6 @@ async def procesar_lote_salida(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         print(f"Advertencia: No se pudo actualizar Google Sheets en tiempo real: {e}")
 
-    # Construir resumen para mostrar en Telegram
     resumen_final = (
         f"🔴 *¡Salida registrada con éxito!*\n"
         f"👤 *Usuario:* {nombre_usuario}\n"
@@ -1153,16 +1414,15 @@ async def procesar_lote_salida(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
     for item in carrito:
-        resumen_final += f"• `{item['codigo']}` | {item['nombre']}: *-{item['cantidad']} un.*\n"
+        seriales_info = f" (Serials: {', '.join(item['seriales'])})" if item.get('seriales') else ""
+        resumen_final += f"• `{item['codigo']}` | {item['nombre']}: *-{item['cantidad']} un.*{seriales_info}\n"
 
-    # Mostrar resumen al usuario
     await query.edit_message_text(
         resumen_final + "\n\n🔒 *Sesión cerrada automáticamente.*",
         reply_markup=None,
         parse_mode="Markdown"
     )
 
-    # Notificar al grupo de Telegram
     if CHAT_ID_GRUPO:
         await context.bot.send_message(
             chat_id=CHAT_ID_GRUPO,
@@ -1170,23 +1430,7 @@ async def procesar_lote_salida(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode="Markdown",
         )
 
-    # Limpiar sesión de usuario
     context.user_data.clear()
-    return ConversationHandler.END
-
-
-async def finalizar_sesion_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.clear()
-
-    query = update.callback_query
-    texto_final = "👋 *Sesión finalizada correctamente.* ¡Hasta pronto!"
-
-    if query:
-        await query.answer()
-        await query.edit_message_text(texto_final, reply_markup=None, parse_mode="Markdown")
-    else:
-        await update.message.reply_text(texto_final, reply_markup=None, parse_mode="Markdown")
-
     return ConversationHandler.END
 
 
@@ -1307,6 +1551,19 @@ def main():
                 CallbackQueryHandler(iniciar_busqueda_directa_salida, pattern="^reiniciar_busqueda_sal$"),
                 CallbackQueryHandler(volver_a_lista_resultados_salida, pattern="^volver_resultados_sal$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, forzar_boton_sin_stock),
+            ],
+
+            PIDE_SERIAL: [
+                *nav_handlers,
+                CallbackQueryHandler(manejar_botones_serial, pattern="^serial_(escanear|manual|borrar_ultimo|volver_menu)$"),
+                CallbackQueryHandler(iniciar_busqueda_directa_salida, pattern="^reiniciar_busqueda_sal$"),
+                CallbackQueryHandler(confirmar_lote_seriales, pattern="^serial_confirmar_lote$"),
+            ],
+
+            ESPERA_TEXTO_SERIAL: [
+                *nav_handlers,
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_texto_serial),
+                CallbackQueryHandler(manejar_botones_serial, pattern="^serial_volver_menu$"),
             ],
 
             PREGUNTAR_OTRO: [
